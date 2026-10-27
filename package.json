@@ -1,0 +1,25 @@
+{
+  "name": "payment-safe-order-processing",
+  "version": "1.0.0",
+  "description": "Distributed order + payment system that stays correct under duplicates, crashes and redelivery",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "gateway": "node services/gateway/index.js",
+    "order": "node services/order/index.js",
+    "payment": "node services/payment/index.js",
+    "relay": "node services/relay/index.js",
+    "provider": "node services/payment-provider/index.js",
+    "migrate": "node scripts/migrate.js",
+    "reconcile": "node scripts/reconcile.js",
+    "test": "node --test tests/*.test.js",
+    "chaos": "bash chaos/run-all.sh"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.4",
+    "express": "^4.21.0",
+    "ioredis": "^5.4.1",
+    "pg": "^8.13.0",
+    "prom-client": "^15.1.3"
+  }
+}

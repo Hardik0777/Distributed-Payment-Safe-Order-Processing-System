@@ -1,0 +1,109 @@
+x-app: &app
+  build: .
+  restart: unless-stopped
+  environment: &env
+    AMQP_URL: amqp://guest:guest@rabbitmq:5672
+    REDIS_URL: redis://redis:6379
+    ORDER_DB_URL: postgres://postgres:postgres@postgres:5432/orders
+    PAYMENT_DB_URL: postgres://postgres:postgres@postgres:5432/payments
+    PROVIDER_DB_URL: postgres://postgres:postgres@postgres:5432/provider
+    ORDER_SERVICE_URL: http://order-service:3001
+    PROVIDER_URL: http://payment-provider:3004
+  depends_on:
+    migrate: { condition: service_completed_successfully }
+    rabbitmq: { condition: service_healthy }
+    redis: { condition: service_started }
+
+services:
+  # ---------- infrastructure ----------
+  postgres:
+    image: postgres:16-alpine
+    environment: { POSTGRES_PASSWORD: postgres }
+    command: postgres -c max_connections=300
+    ports: ["5432:5432"]
+    healthcheck: { test: ["CMD", "pg_isready", "-U", "postgres"], interval: 2s, retries: 30 }
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_ERLANG_COOKIE: "psops-demo-cookie"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    ports: ["5672:5672", "15672:15672"]   # UI: http://localhost:15672 (guest/guest)
+    healthcheck: { test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"], interval: 3s, retries: 40 }
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  # One-shot: creates the 3 databases (orders, payments, provider) + schema.
+  # In a real deployment each service would own a separate Postgres instance;
+  # one instance with separate databases keeps the laptop demo light while
+  # preserving the rule "no service reads another service's database".
+  migrate:
+    build: .
+    command: node scripts/migrate.js
+    environment:
+      ORDER_DB_URL: postgres://postgres:postgres@postgres:5432/orders
+      PAYMENT_DB_URL: postgres://postgres:postgres@postgres:5432/payments
+      PROVIDER_DB_URL: postgres://postgres:postgres@postgres:5432/provider
+    depends_on: { postgres: { condition: service_healthy } }
+    restart: "no"
+
+  # ---------- application ----------
+  gateway:
+    <<: *app
+    command: node services/gateway/index.js
+    environment: { <<: *env, SERVICE_NAME: gateway, PORT: 3000 }
+    ports: ["3000:3000"]
+
+  order-service:
+    <<: *app
+    command: node services/order/index.js
+    environment: { <<: *env, SERVICE_NAME: order-service, PORT: 3001 }
+    ports: ["3001:3001"]
+
+  payment-service:
+    <<: *app
+    command: node services/payment/index.js
+    environment: { <<: *env, SERVICE_NAME: payment-service, PORT: 3002 }
+    ports: ["3002:3002"]
+
+  relay-order:
+    <<: *app
+    command: node services/relay/index.js
+    environment: { <<: *env, SERVICE_NAME: relay-order, PORT: 3010, OUTBOX_DB_URL: postgres://postgres:postgres@postgres:5432/orders }
+    ports: ["3010:3010"]
+
+  relay-payment:
+    <<: *app
+    command: node services/relay/index.js
+    environment: { <<: *env, SERVICE_NAME: relay-payment, PORT: 3011, OUTBOX_DB_URL: postgres://postgres:postgres@postgres:5432/payments }
+    ports: ["3011:3011"]
+
+  payment-provider:
+    <<: *app
+    command: node services/payment-provider/index.js
+    environment: { <<: *env, SERVICE_NAME: payment-provider, PORT: 3004 }
+    ports: ["3004:3004"]
+
+  # ---------- observability ----------
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    volumes: ["./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3030:3000"]   # http://localhost:3030
+    depends_on: [prometheus]
+
+volumes:
+  rabbitmq-data:
